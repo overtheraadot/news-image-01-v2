@@ -1,557 +1,452 @@
 #!/usr/bin/env python3
-"""News-image-01 -- one image summing up Friday 13 November 2026.
+"""news-image-01 -- one image summing up the world news of Friday 13 November 2026.
 
-A magazine front page drawn with nothing but the Python standard
-library (zlib for the PNG encoder). No network, no files read, no
-randomness: the same bytes come out on every run.
+A newspaper front page drawn from scratch in pure Python 3.13 standard
+library: a hand-rolled 5x7 bitmap font, flat vector shapes, a zlib PNG
+encoder written by hand. Deterministic (fixed-seed LCG for the city
+lights), no network, no files read, no timestamps. Writes a 1024x1024
+PNG (<= 1 MiB) to $MAKEFUN_OUTPUT_DIR/entry.png (default ./out/entry.png).
 
-Layout: a masthead ("13 NOVEMBER 2026" / "THE WORLD TODAY"), a central
-globe with a dove and three flags for the lead story (Ukraine peace
-talks -- US envoys Witkoff and Kushner met Putin in Moscow, Europe
-joins the next round, a large prisoner exchange agreed in principle),
-and a 2 x 3 grid of flat pictorial vignettes for the other verified
-stories of the day. All labels are set in a tiny 5x7 bitmap font
-implemented here, drawn with rectangles so the text stays legible.
-
-Stories (all verified against the day's reporting):
-  * Nvidia CEO Jensen Huang resigned; the Senate summoned Huang and
-    Lutnick; shares closed down ~4%.
-  * Microsoft 365 global outage: Outlook, Teams and Copilot down
-    across 74 countries.
-  * Israeli strike on Nasser Hospital, Khan Younis, kills six,
-    including a surgeon and a 13-year-old.
-  * Ukrainian drone hits a Russian warship in the Gulf of Finland.
-  * FBI: North Korean hackers stole $400m in crypto via fake
-    video calls.
-  * Harry Kane breaks England's appearance record (126 caps)
-    vs Croatia.
+Stories pictured (all from the news of 13 November 2026):
+  Lead   -- Ukraine peace talks: US envoys Witkoff & Kushner met Putin in
+            Moscow; Putin agreed Europe joins the next round; Zelensky met
+            the envoys in Dublin; a large prisoner exchange agreed.
+  Vignettes -- Nvidia CEO Jensen Huang resigns (shares down ~4%);
+            Microsoft 365 global outage (Outlook, Teams, Copilot, 74
+            countries); Israeli strike on Nasser Hospital, Khan Younis,
+            kills six; Ukrainian drone hits a Russian warship in the Gulf
+            of Finland; FBI: North Korean hackers stole $400m in crypto
+            via fake video calls; Harry Kane breaks England's appearance
+            record (126 caps) vs Croatia.
 """
 
-import math
 import os
 import struct
 import zlib
 
-W = H = 1024
-OUT_NAME = "entry.png"
+W = 1024
+H = 1024
 
-# ------------------------------------------------------------------ palette
-PAPER = (245, 240, 230)      # warm newsprint
-PAPER_DK = (232, 225, 210)
-INK = (27, 42, 74)           # deep newsroom navy
-INK_SOFT = (58, 68, 96)
-RED = (176, 46, 46)          # masthead red / alert red
-GOLD = (201, 151, 63)
-GOLD_LT = (232, 190, 110)
-OCEAN = (46, 110, 166)
-OCEAN_DK = (28, 74, 128)
-OCEAN_LT = (96, 158, 205)
-LAND = (196, 176, 120)
-LAND_GREEN = (110, 150, 104)
-WHITE = (250, 250, 246)
-DOVE = (252, 252, 248)
-DOVE_SHADE = (214, 214, 206)
-LEAF = (84, 128, 70)
-SLATE = (84, 92, 118)
-SLATE_DK = (52, 58, 84)
-CHIP = (38, 44, 68)
-WARN = (240, 176, 40)
-HOSP = (52, 104, 116)
-SEA = (64, 96, 132)
-SEA_DK = (44, 70, 102)
-SHIP = (70, 76, 92)
-SHIP_DK = (44, 48, 62)
-SMOKE = (150, 150, 148)
-LAPTOP = (40, 44, 60)
-MASK = (236, 236, 230)
-GREY_LINE = (196, 188, 172)
-MUTE = (120, 114, 100)
+# ---------------------------------------------------------------- palette
+PAPER   = (247, 243, 232)   # newsprint cream
+INK     = (24, 24, 24)
+RULE    = (178, 172, 156)   # light separator
+NAVY    = (16, 42, 90)
+NIGHT   = (10, 28, 66)      # globe night side
+SEABLUE = (24, 58, 110)
+LAND    = (38, 92, 66)
+LIGHT   = (255, 214, 90)    # city lights
+WHITE   = (255, 255, 255)
+RED     = (196, 30, 30)
+YELLOW  = (245, 200, 40)
+GREY    = (120, 120, 120)
+DGREY   = (70, 70, 70)
+LGREY   = (150, 150, 150)
+GREEN   = (46, 125, 50)
+DGREEN  = (24, 77, 32)
+ORANGE  = (235, 120, 30)
+SKIN    = (232, 190, 150)
+GOLD    = (212, 175, 55)
+DGOLD   = (150, 115, 25)
+BROWN   = (120, 72, 20)
+UKRBLUE = (0, 87, 183)
+UKRYEL  = (255, 213, 0)
+EUBLUE  = (0, 51, 153)
+SCREEN  = (18, 20, 34)
 
-# ------------------------------------------------------------------ 5x7 font
-# Each glyph is 7 rows of 5 cells; '#' is ink, '.' is blank.
+# ------------------------------------------------------------- 5x7 font
+# Each glyph is 7 rows of 5 cells ('#' = ink). Hand-defined from scratch.
 FONT = {
-    "A": (" .###. ", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
-    "B": ("####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."),
-    "C": (".####", "#....", "#....", "#....", "#....", "#....", ".####"),
-    "D": ("####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."),
-    "E": ("#####", "#....", "#....", "####.", "#....", "#....", "#####"),
-    "F": ("#####", "#....", "#....", "####.", "#....", "#....", "#...."),
-    "G": (".####", "#....", "#....", "#.###", "#...#", "#...#", ".###."),
-    "H": ("#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
-    "I": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "#####"),
-    "J": ("..###", "....#", "....#", "....#", "....#", "#...#", ".###."),
-    "K": ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
-    "L": ("#....", "#....", "#....", "#....", "#....", "#....", "#####"),
-    "M": ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"),
-    "N": ("#...#", "##..#", "##..#", "#.#.#", "#..##", "#..##", "#...#"),
-    "O": (".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
-    "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
-    "Q": (".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"),
-    "R": ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"),
-    "S": (".####", "#....", "#....", ".###.", "....#", "....#", "####."),
-    "T": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
-    "U": ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
-    "V": ("#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."),
-    "W": ("#...#", "#...#", "#...#", "#.#.#", "#.#.#", "##.##", "#...#"),
-    "X": ("#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"),
-    "Y": ("#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."),
-    "Z": ("#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"),
-    "0": (".###.", "#..##", "#.#.#", "##..#", "#...#", "#...#", ".###."),
-    "1": ("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."),
-    "2": (".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####"),
-    "3": ("####.", "....#", "....#", ".###.", "....#", "....#", "####."),
-    "4": ("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."),
-    "5": ("#####", "#....", "####.", "....#", "....#", "#...#", ".###."),
-    "6": (".###.", "#....", "#....", "####.", "#...#", "#...#", ".###."),
-    "7": ("#####", "....#", "...#.", "...#.", "..#..", "..#..", "..#.."),
-    "8": (".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."),
-    "9": (".###.", "#...#", "#...#", ".####", "....#", "....#", ".###."),
-    ":": (".....", "..#..", ".....", ".....", ".....", "..#..", "....."),
-    ".": (".....", ".....", ".....", ".....", ".....", ".....", "..#.."),
-    "$": ("..#..", ".####", "#.#..", ".###.", "..#.#", "####.", "..#.."),
-    "-": (".....", ".....", ".....", "#####", ".....", ".....", "....."),
-    "'": ("..#..", "..#..", ".....", ".....", ".....", ".....", "....."),
-    "/": ("....#", "....#", "...#.", "...#.", "..#..", ".#...", "#...."),
-    "(": ("...#.", "..#..", ".#...", ".#...", ".#...", "..#..", "...#."),
-    ")": (".#...", "..#..", "...#.", "...#.", "...#.", "..#..", ".#..."),
-    " ": (".....", ".....", ".....", ".....", ".....", ".....", "....."),
+    'A': ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
+    'B': ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
+    'C': ("01111", "10000", "10000", "10000", "10000", "10000", "01111"),
+    'D': ("11110", "10001", "10001", "10001", "10001", "10001", "11110"),
+    'E': ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
+    'F': ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
+    'G': ("01111", "10000", "10000", "10111", "10001", "10001", "01110"),
+    'H': ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
+    'I': ("11111", "00100", "00100", "00100", "00100", "00100", "11111"),
+    'J': ("00111", "00010", "00010", "00010", "00010", "10010", "01100"),
+    'K': ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
+    'L': ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
+    'M': ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
+    'N': ("10001", "11001", "11001", "10101", "10011", "10011", "10001"),
+    'O': ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
+    'P': ("11110", "10001", "10001", "11110", "10000", "10000", "10000"),
+    'Q': ("01110", "10001", "10001", "10001", "10101", "10010", "01101"),
+    'R': ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
+    'S': ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
+    'T': ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
+    'U': ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
+    'V': ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
+    'W': ("10001", "10001", "10001", "10101", "10101", "11011", "10001"),
+    'X': ("10001", "10001", "01010", "00100", "01010", "10001", "10001"),
+    'Y': ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
+    'Z': ("11111", "00001", "00010", "00100", "01000", "10000", "11111"),
+    '0': ("01110", "10011", "10101", "11001", "10001", "10001", "01110"),
+    '1': ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    '2': ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
+    '3': ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+    '4': ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    '5': ("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
+    '6': ("01110", "10000", "10000", "11110", "10001", "10001", "01110"),
+    '7': ("11111", "00001", "00010", "00100", "00100", "00100", "00100"),
+    '8': ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    '9': ("01110", "10001", "10001", "01111", "00001", "00001", "01110"),
+    ' ': ("00000", "00000", "00000", "00000", "00000", "00000", "00000"),
+    '.': ("00000", "00000", "00000", "00000", "00000", "01100", "01100"),
+    ':': ("00000", "01100", "01100", "00000", "01100", "01100", "00000"),
+    '$': ("00100", "01111", "10101", "01110", "00101", "11110", "00100"),
+    '-': ("00000", "00000", "00000", "11111", "00000", "00000", "00000"),
 }
-# Normalise: strip the padding spaces I typed on the first row of "A".
-FONT = {k: tuple(row.strip()[:5].ljust(5, ".") for row in v)
-        for k, v in FONT.items()}
 
 
 def text_width(s, scale):
-    """Pixel width of s at the given scale (1px gap between glyphs)."""
-    if not s:
-        return 0
-    return len(s) * 6 * scale - scale
+    return len(s) * (6 * scale) - scale
 
 
-# ------------------------------------------------------------------ canvas
-class Board:
-    """Flat RGB buffer with small filled-shape primitives."""
+# ---------------------------------------------------------------- canvas
+class Canvas:
+    def __init__(self):
+        self.px = bytearray(W * H * 3)
+        self.rect(0, 0, W, H, PAPER)
 
-    def __init__(self, w, h, bg):
-        self.w = w
-        self.h = h
-        self.px = bytearray(w * h * 3)
-        self.fill(bg)
+    def set(self, x, y, c):
+        if 0 <= x < W and 0 <= y < H:
+            i = (y * W + x) * 3
+            self.px[i], self.px[i + 1], self.px[i + 2] = c
 
-    def fill(self, rgb):
-        self.px[:] = bytes(rgb) * (self.w * self.h)
+    def rect(self, x, y, w, h, c):
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(W, x + w), min(H, y + h)
+        for yy in range(y0, y1):
+            i = (yy * W + x0) * 3
+            for xx in range(x0, x1):
+                self.px[i], self.px[i + 1], self.px[i + 2] = c
+                i += 3
 
-    def hline(self, y, x0, x1, rgb):
-        if y < 0 or y >= self.h:
-            return
-        x0 = max(0, int(x0))
-        x1 = min(self.w - 1, int(x1))
-        if x1 < x0:
-            return
-        i = (y * self.w + x0) * 3
-        self.px[i:i + 3 * (x1 - x0 + 1)] = bytes(rgb) * (x1 - x0 + 1)
+    def outline(self, x, y, w, h, c, t=1):
+        self.rect(x, y, w, t, c)
+        self.rect(x, y + h - t, w, t, c)
+        self.rect(x, y, t, h, c)
+        self.rect(x + w - t, y, t, h, c)
 
-    def rect(self, x, y, w, h, rgb):
-        for yy in range(int(y), int(y + h)):
-            self.hline(yy, x, x + w - 1, rgb)
+    def line(self, x0, y0, x1, y1, c):
+        dx, dy = abs(x1 - x0), abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        while True:
+            self.set(x0, y0, c)
+            if x0 == x1 and y0 == y1:
+                return
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x0 += sx
+            if e2 < dx:
+                err += dx
+                y0 += sy
 
-    def disc(self, cx, cy, r, rgb):
-        r = int(r)
-        for y in range(max(0, cy - r), min(self.h - 1, cy + r) + 1):
-            dy = y - cy
-            dx = int(math.sqrt(max(0, r * r - dy * dy)))
-            self.hline(y, cx - dx, cx + dx, rgb)
+    def circle(self, cx, cy, r, c):
+        for y in range(-r, r + 1):
+            dx = int((r * r - y * y) ** 0.5)
+            self.rect(cx - dx, cy + y, 2 * dx + 1, 1, c)
 
-    def ellipse(self, cx, cy, rx, ry, rgb):
-        rx, ry = int(rx), int(ry)
-        for y in range(max(0, cy - ry), min(self.h - 1, cy + ry) + 1):
-            t = (y - cy) / ry
-            dx = int(rx * math.sqrt(max(0.0, 1.0 - t * t)))
-            self.hline(y, cx - dx, cx + dx, rgb)
+    def circle_outline(self, cx, cy, r, c, t=1):
+        for k in range(t):
+            rr = r - k
+            for a in range(360):
+                import math
+                x = cx + int(rr * math.cos(math.radians(a)))
+                y = cy + int(rr * math.sin(math.radians(a)))
+                self.set(x, y, c)
 
-    def ring(self, cx, cy, r, thick, rgb):
-        for k in range(720):
-            th = 2 * math.pi * k / 720
-            self.disc(int(cx + r * math.cos(th)),
-                      int(cy + r * math.sin(th)), thick, rgb)
+    def ellipse(self, cx, cy, rx, ry, c):
+        for y in range(-ry, ry + 1):
+            dx = int(rx * (1 - (y * y) / float(ry * ry)) ** 0.5) if ry else 0
+            self.rect(cx - dx, cy + y, 2 * dx + 1, 1, c)
 
-    def ellipse_arc(self, cx, cy, rx, ry, rgb, a0=0.0, a1=2 * math.pi):
-        steps = 240
-        for i in range(steps + 1):
-            th = a0 + (a1 - a0) * i / steps
-            self.disc(int(cx + rx * math.cos(th)),
-                      int(cy + ry * math.sin(th)), 1, rgb)
-
-    def poly(self, pts, rgb):
-        """Scanline polygon fill (even-odd pairing)."""
-        edges = []
-        n = len(pts)
-        for i in range(n):
-            x0, y0 = pts[i]
-            x1, y1 = pts[(i + 1) % n]
-            if y0 != y1:
-                edges.append((y0, y1, x0, x1))
-        if not edges:
-            return
-        ymin = max(0, int(min(p[1] for p in pts)))
-        ymax = min(self.h - 1, int(max(p[1] for p in pts)))
-        for y in range(ymin, ymax + 1):
+    def triangle(self, p1, p2, p3, c):
+        ys = [p1[1], p2[1], p3[1]]
+        for y in range(min(ys), max(ys) + 1):
             xs = []
-            for y0, y1, x0, x1 in edges:
-                if (y0 <= y < y1) or (y1 <= y < y0):
-                    xs.append(x0 + (y - y0) / (y1 - y0) * (x1 - x0))
-            xs.sort()
-            for i in range(0, len(xs) - 1, 2):
-                self.hline(y, math.ceil(xs[i]), math.floor(xs[i + 1]), rgb)
+            for a, b in ((p1, p2), (p2, p3), (p3, p1)):
+                if a[1] == b[1]:
+                    continue
+                if min(a[1], b[1]) <= y < max(a[1], b[1]):
+                    t = (y - a[1]) / (b[1] - a[1])
+                    xs.append(a[0] + t * (b[0] - a[0]))
+            if len(xs) >= 2:
+                x0, x1 = int(min(xs)), int(max(xs))
+                self.rect(x0, y, x1 - x0 + 1, 1, c)
 
-    def line(self, x0, y0, x1, y1, rgb, thick=1):
-        steps = max(abs(x1 - x0), abs(y1 - y0), 1)
-        for i in range(steps + 1):
-            t = i / steps
-            self.disc(int(x0 + (x1 - x0) * t), int(y0 + (y1 - y0) * t),
-                      thick, rgb)
-
-    def bezier(self, p0, p1, p2, rgb, thick=1, steps=24):
-        prev = None
-        for i in range(steps + 1):
-            t = i / steps
-            u = 1.0 - t
-            x = int(u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0])
-            y = int(u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1])
-            if prev is not None:
-                self.line(prev[0], prev[1], x, y, rgb, thick)
-            prev = (x, y)
-
-    def text(self, x, y, s, scale, rgb, align="left"):
-        """Draw s in the 5x7 font; y is the top row. Returns pixel width."""
-        w = text_width(s, scale)
+    def text(self, x, y, s, scale, c, align="left"):
         if align == "center":
-            x -= w // 2
-        elif align == "right":
-            x -= w
+            x -= text_width(s, scale) // 2
         cx = x
         for ch in s:
-            glyph = FONT.get(ch.upper(), FONT[" "])
-            for r, row in enumerate(glyph):
-                for c, cell in enumerate(row):
-                    if cell == "#":
-                        self.rect(cx + c * scale, y + r * scale,
-                                  scale, scale, rgb)
+            glyph = FONT.get(ch, FONT[' '])
+            for row in range(7):
+                bits = glyph[row]
+                for col in range(5):
+                    if bits[col] == '1':
+                        self.rect(cx + col * scale, y + row * scale,
+                                  scale, scale, c)
             cx += 6 * scale
-        return w
 
 
-# ------------------------------------------------------------------ masthead
-def draw_masthead(b):
-    b.rect(0, 0, W, 10, RED)
-    b.text(W // 2, 30, "13 NOVEMBER 2026", 5, INK, align="center")
-    b.text(W // 2, 82, "THE WORLD TODAY", 3, RED, align="center")
-    b.rect(48, 122, W - 96, 3, INK)
-    b.rect(48, 129, W - 96, 1, INK)
+# ------------------------------------------------------- deterministic rng
+def lcg(seed):
+    s = seed
+    while True:
+        s = (1103515245 * s + 12345) & 0x7FFFFFFF
+        yield s
 
 
-# ------------------------------------------------------------------ the globe
-# Rough continent blobs, relative to the globe centre.
-CONTINENTS = [
-    [(-118, -58), (-92, -88), (-58, -78), (-40, -52), (-52, -28),
-     (-84, -18), (-112, -30)],                       # N. America
-    [(-52, -88), (-38, -92), (-28, -78), (-44, -72)],  # Greenland
-    [(-66, 14), (-44, 4), (-30, 22), (-36, 62), (-52, 78),
-     (-68, 52), (-74, 26)],                          # S. America
-    [(6, -34), (34, -44), (52, -18), (44, 22), (22, 44),
-     (2, 34), (-10, 2)],                             # Africa
-    [(34, -72), (76, -88), (112, -70), (118, -30), (92, -14),
-     (60, -34), (40, -52)],                          # Eurasia
-    [(72, 46), (102, 42), (112, 62), (88, 74), (70, 62)],  # Australia
+# ------------------------------------------------------------------ dove
+def draw_dove(cv):
+    # White dove flying right, olive branch in its beak, above the globe.
+    # Neck + raised head so it reads as a bird, not a fish; tail feathers
+    # sweep down-left, wing arcs over the back.
+    cv.triangle((466, 178), (432, 196), (462, 198), WHITE)  # tail feather 1
+    cv.triangle((466, 188), (438, 206), (466, 200), WHITE)  # tail feather 2
+    cv.ellipse(505, 186, 48, 18, WHITE)          # body
+    cv.ellipse(540, 172, 13, 11, WHITE)          # neck
+    cv.circle(556, 160, 15, WHITE)               # head, raised
+    cv.triangle((570, 156), (590, 162), (570, 166), ORANGE)  # beak
+    cv.rect(560, 155, 3, 3, INK)                 # eye
+    cv.ellipse(494, 176, 28, 9, (214, 214, 214))  # wing
+    cv.ellipse(494, 178, 20, 5, (196, 196, 196))  # wing shading
+    # Olive branch held in the beak, drooping down-right.
+    cv.line(588, 164, 626, 194, DGREEN)
+    cv.line(589, 164, 627, 194, DGREEN)
+    cv.ellipse(600, 174, 9, 4, GREEN)
+    cv.ellipse(612, 184, 9, 4, GREEN)
+    cv.ellipse(606, 190, 4, 9, GREEN)
+    cv.circle(618, 192, 4, DGREEN)
+    cv.circle(626, 198, 4, DGREEN)
+
+
+# ------------------------------------------------------------------ flags
+def draw_flag_ukraine(cv, x, y, w, h):
+    cv.rect(x, y, w, h // 2, UKRBLUE)
+    cv.rect(x, y + h // 2, w, h - h // 2, UKRYEL)
+    cv.outline(x, y, w, h, INK, 2)
+
+
+def draw_flag_eu(cv, x, y, w, h):
+    import math
+    cv.rect(x, y, w, h, EUBLUE)
+    cx, cy, r = x + w // 2, y + h // 2, 13
+    for k in range(12):
+        a = math.radians(k * 30 - 90)
+        cv.circle(cx + int(r * math.cos(a)), cy + int(r * math.sin(a)), 2, YELLOW)
+    cv.outline(x, y, w, h, INK, 2)
+
+
+def draw_flag_usa(cv, x, y, w, h):
+    stripe = h // 7
+    for i in range(7):
+        cv.rect(x, y + i * stripe, w, stripe, RED if i % 2 == 0 else WHITE)
+    cv.rect(x, y, w * 2 // 5, stripe * 4, NAVY)
+    for row in range(3):
+        for col in range(4):
+            cv.set(x + 5 + col * 7, y + 4 + row * 6, WHITE)
+    cv.outline(x, y, w, h, INK, 2)
+
+
+# ------------------------------------------------------------------ globe
+def draw_globe(cv):
+    cx, cy, r = 512, 352, 132
+    cv.circle(cx, cy, r, NIGHT)
+    cv.circle_outline(cx, cy, r, (70, 120, 190), 3)
+    # Landmasses in dark green, night side.
+    cv.ellipse(468, 318, 46, 24, LAND)
+    cv.ellipse(560, 382, 52, 28, LAND)
+    cv.ellipse(478, 412, 30, 18, LAND)
+    cv.ellipse(592, 300, 24, 15, LAND)
+    cv.ellipse(520, 340, 22, 14, LAND)
+    # City lights: fixed-seed deterministic scatter inside the globe.
+    rng = lcg(20261113)
+    placed = 0
+    while placed < 150:
+        dx = next(rng) % (2 * r) - r
+        dy = next(rng) % (2 * r) - r
+        if dx * dx + dy * dy > (r - 8) * (r - 8):
+            continue
+        cv.rect(cx + dx, cy + dy, 2, 2, LIGHT)
+        placed += 1
+    # Thin daylight crescent on the right rim.
+    cv.circle_outline(cx, cy, r - 4, (120, 170, 230), 2)
+
+
+# -------------------------------------------------------------- vignettes
+def v_nvidia(cv, x, y):
+    # Empty witness chair, computer chip, red downward arrow.
+    cv.rect(x + 58, y + 8, 10, 58, BROWN)        # chair back
+    cv.rect(x + 40, y + 64, 80, 10, BROWN)       # seat
+    cv.rect(x + 46, y + 74, 7, 22, BROWN)        # legs
+    cv.rect(x + 108, y + 74, 7, 22, BROWN)
+    cv.rect(x + 185, y + 22, 64, 64, (28, 28, 28))  # chip
+    for i in range(4):                            # pins
+        cv.rect(x + 193 + i * 14, y + 14, 6, 8, DGREY)
+        cv.rect(x + 193 + i * 14, y + 86, 6, 8, DGREY)
+        cv.rect(x + 177, y + 30 + i * 14, 8, 6, DGREY)
+        cv.rect(x + 249, y + 30 + i * 14, 8, 6, DGREY)
+    cv.rect(x + 205, y + 42, 24, 24, (96, 96, 96))
+    cv.rect(x + 340, y + 10, 10, 52, RED)        # arrow shaft
+    cv.triangle((x + 322, y + 58), (x + 368, y + 58), (x + 345, y + 84), RED)
+
+
+def v_microsoft(cv, x, y):
+    # Dark envelope with a warning triangle.
+    cv.rect(x + 150, y + 18, 170, 86, (45, 55, 75))
+    cv.line(x + 150, y + 18, x + 235, y + 62, (90, 100, 125))
+    cv.line(x + 320, y + 18, x + 235, y + 62, (90, 100, 125))
+    cv.line(x + 150, y + 104, x + 235, y + 62, (90, 100, 125))
+    cv.line(x + 320, y + 104, x + 235, y + 62, (90, 100, 125))
+    cv.triangle((x + 235, y + 26), (x + 203, y + 88), (x + 267, y + 88), YELLOW)
+    cv.rect(x + 233, y + 46, 5, 22, INK)         # exclamation mark
+    cv.rect(x + 233, y + 72, 5, 5, INK)
+
+
+def v_hospital(cv, x, y):
+    # Hospital building with a cross, plus a lit candle.
+    cv.rect(x + 140, y + 18, 130, 86, WHITE)
+    cv.outline(x + 140, y + 18, 130, 86, DGREY, 2)
+    cv.rect(x + 192, y + 0, 26, 26, RED)         # cross sign
+    cv.rect(x + 202, y + 4, 6, 18, WHITE)
+    cv.rect(x + 197, y + 9, 16, 6, WHITE)
+    for row in range(3):
+        for col in range(3):
+            cv.rect(x + 152 + col * 40, y + 32 + row * 22, 18, 14, (60, 80, 110))
+    cv.rect(x + 196, y + 84, 18, 20, DGREY)      # door
+    cv.rect(x + 312, y + 58, 10, 44, WHITE)      # candle
+    cv.outline(x + 312, y + 58, 10, 44, DGREY, 1)
+    cv.ellipse(x + 317, y + 48, 6, 10, ORANGE)   # flame
+    cv.ellipse(x + 317, y + 50, 3, 5, YELLOW)
+
+
+def v_warship(cv, x, y):
+    # Grey warship with smoke, on a grey sea.
+    cv.rect(x + 20, y + 80, 420, 20, (96, 116, 134))   # sea
+    cv.line(x + 40, y + 88, x + 120, y + 88, WHITE)
+    cv.line(x + 300, y + 94, x + 400, y + 94, WHITE)
+    cv.circle(x + 238, y + 16, 9, LGREY)         # smoke
+    cv.circle(x + 254, y + 8, 11, LGREY)
+    cv.circle(x + 272, y + 4, 8, LGREY)
+    cv.rect(x + 232, y + 26, 18, 14, DGREY)      # funnel
+    cv.rect(x + 180, y + 40, 92, 16, DGREY)      # superstructure
+    cv.line(x + 220, y + 40, x + 220, y + 22, DGREY)  # mast
+    cv.rect(x + 120, y + 56, 220, 24, GREY)      # hull
+    cv.triangle((x + 340, y + 56), (x + 340, y + 80), (x + 372, y + 80), GREY)
+    cv.rect(x + 120, y + 56, 220, 4, (150, 150, 150))
+
+
+def v_hack(cv, x, y):
+    # Laptop showing a masked face, gold coins spilling out.
+    cv.rect(x + 150, y + 10, 150, 84, SCREEN)
+    cv.outline(x + 150, y + 10, 150, 84, INK, 2)
+    cv.circle(x + 225, y + 52, 26, SKIN)         # face
+    cv.rect(x + 199, y + 42, 52, 13, INK)        # black mask band
+    cv.circle(x + 213, y + 48, 3, WHITE)         # eyes
+    cv.circle(x + 237, y + 48, 3, WHITE)
+    cv.rect(x + 135, y + 94, 180, 8, DGREY)      # laptop base
+    for cx, cy, r in ((300, 97, 6), (316, 100, 6), (288, 100, 5),
+                      (330, 97, 5), (308, 102, 5), (324, 103, 5)):
+        cv.circle(x + cx, y + cy, r, GOLD)
+        cv.circle_outline(x + cx, y + cy, r, DGOLD, 1)
+
+
+def v_kane(cv, x, y):
+    # Footballer in a white shirt, arms raised, with a football.
+    cv.circle(x + 212, y + 30, 14, SKIN)         # head
+    for d in (-1, 0, 1):  # raised arms, thickened
+        cv.line(x + 200 + d, y + 48, x + 178 + d, y + 22, INK)
+        cv.line(x + 224 + d, y + 48, x + 246 + d, y + 22, INK)
+    cv.rect(x + 196, y + 46, 32, 46, WHITE)      # white shirt
+    cv.outline(x + 196, y + 46, 32, 46, DGREY, 1)
+    cv.rect(x + 200, y + 92, 9, 14, INK)         # legs
+    cv.rect(x + 215, y + 92, 9, 14, INK)
+    cv.circle(x + 330, y + 46, 20, WHITE)        # football
+    cv.circle_outline(x + 330, y + 46, 20, INK, 2)
+    cv.circle(x + 330, y + 46, 5, INK)           # pentagon
+    for dx, dy in ((-12, -8), (12, -8), (-12, 10), (12, 10), (0, -15)):
+        cv.circle(x + 330 + dx, y + 46 + dy, 2, INK)
+
+
+VIGNETTES = [
+    (v_nvidia,    "NVIDIA CEO RESIGNS"),
+    (v_microsoft, "MICROSOFT OUTAGE"),
+    (v_hospital,  "HOSPITAL STRIKE KILLS SIX"),
+    (v_warship,   "DRONE HITS RUSSIAN WARSHIP"),
+    (v_hack,      "FBI: N. KOREA $400M HACK"),
+    (v_kane,      "KANE BREAKS ENGLAND RECORD"),
 ]
 
-GX, GY, GR = 512, 312, 140
+
+# -------------------------------------------------------------- front page
+def draw_front_page(cv):
+    # Masthead.
+    cv.text(512, 24, "13 NOVEMBER 2026", 8, INK, align="center")
+    cv.text(512, 90, "THE WORLD TODAY", 4, INK, align="center")
+    cv.rect(40, 130, 944, 3, INK)
+    cv.rect(40, 136, 944, 1, INK)
+
+    # Lead story: dove, globe, flags, banner.
+    draw_dove(cv)
+    draw_globe(cv)
+    draw_flag_ukraine(cv, 690, 248, 72, 44)
+    draw_flag_eu(cv, 690, 300, 72, 44)
+    draw_flag_usa(cv, 690, 352, 72, 44)
+    cv.rect(212, 500, 600, 42, NAVY)
+    cv.text(512, 511, "EUROPE JOINS UKRAINE TALKS", 3, WHITE, align="center")
+
+    # Six vignettes in a 2x3 grid.
+    cols_x = (40, 524)
+    rows_y = (560, 700, 840)
+    for i, (fn, label) in enumerate(VIGNETTES):
+        x = cols_x[i % 2]
+        y = rows_y[i // 2]
+        fn(cv, x, y)
+        cv.text(x + 230, y + 108, label, 2, INK, align="center")
+    cv.line(512, 556, 512, 978, RULE)
+    cv.line(40, 694, 984, 694, RULE)
+    cv.line(40, 834, 984, 834, RULE)
+
+    # Footer.
+    cv.rect(40, 982, 944, 2, RULE)
+    cv.text(512, 992, "FRIDAY 13 NOVEMBER 2026 - WORLD NEWS IN ONE IMAGE",
+            2, DGREY, align="center")
 
 
-def draw_globe(b):
-    b.disc(GX, GY, GR, OCEAN)
-    # light from the upper left, dusk shade lower right
-    b.ellipse(GX - 46, GY - 52, 62, 44, OCEAN_LT)
-    b.ellipse(GX + 58, GY + 56, 66, 48, OCEAN_DK)
-    for pts in CONTINENTS:
-        b.poly([(GX + int(x * 1.1), GY + int(y * 1.1)) for x, y in pts],
-               LAND)
-    b.ellipse(GX + 28, GY + 6, 14, 9, LAND_GREEN)
-    b.ellipse(GX + 84, GY - 58, 18, 8, LAND_GREEN)
-    # latitude / longitude lines
-    b.ellipse_arc(GX, GY, GR - 2, 44, OCEAN_DK)
-    b.ellipse_arc(GX, GY, GR - 2, 88, OCEAN_DK)
-    b.ellipse_arc(GX, GY, 44, GR - 2, OCEAN_DK)
-    b.ellipse_arc(GX, GY, 88, GR - 2, OCEAN_DK)
-    b.ring(GX, GY, GR, 3, GOLD)
-    b.ring(GX, GY, GR + 7, 1, GOLD)
-
-
-def draw_dove(b):
-    # White dove rising beside the globe's upper right, olive branch
-    # in its beak. The wing is drawn wide and rooted in the body so it
-    # reads as one bird, not a detached sail.
-    # Tail feathers fanning to the left.
-    b.poly([(636, 212), (596, 192), (588, 206), (632, 226)], DOVE_SHADE)
-    b.poly([(640, 222), (606, 212), (600, 224), (638, 232)], DOVE_SHADE)
-    # Raised wing sweeping up, base overlapping the body.
-    b.poly([(644, 214), (618, 140), (592, 150), (622, 200), (648, 222)],
-           DOVE)
-    b.poly([(644, 214), (628, 162), (612, 164), (634, 206)], DOVE_SHADE)
-    # Body: long ellipse tilted up to the right.
-    b.ellipse(700, 212, 58, 24, DOVE)
-    # Head, eye, beak.
-    b.disc(756, 192, 15, DOVE)
-    b.poly([(768, 186), (786, 192), (768, 198)], GOLD)
-    b.disc(760, 188, 3, INK)
-    # Olive branch trailing from the beak.
-    b.bezier((784, 194), (812, 202), (830, 226), LEAF, thick=2)
-    for lx, ly in [(800, 200), (812, 212), (822, 222)]:
-        b.ellipse(lx, ly, 10, 4, LEAF)
-    # A few drifting feathers below.
-    for x, y, r in [(660, 254, 4), (692, 264, 3), (724, 256, 4)]:
-        b.disc(x, y, r, DOVE_SHADE)
-
-
-def draw_flags(b):
-    """Three small flags under the globe: Ukraine, EU, USA."""
-    y = 456
-    # Ukraine: blue over yellow.
-    b.rect(443, y, 36, 7, (0, 87, 183))
-    b.rect(443, y + 7, 36, 7, (255, 215, 0))
-    # EU: blue field, ring of gold stars.
-    b.rect(494, y, 36, 14, (0, 51, 153))
-    for k in range(8):
-        th = 2 * math.pi * k / 8
-        b.disc(int(512 + 5 * math.cos(th)), int(y + 7 + 5 * math.sin(th)),
-               1, GOLD_LT)
-    # USA: stripes + canton.
-    for i in range(7):
-        b.rect(545, y + i * 2, 36, 2, RED if i % 2 == 0 else WHITE)
-    b.rect(545, y, 15, 8, (0, 40, 104))
-    b.disc(552, y + 4, 1, WHITE)
-    # Thin poles.
-    for fx in (441, 492, 543):
-        b.line(fx, y - 4, fx, y + 14, INK_SOFT, 1)
-
-
-def draw_lead_banner(b):
-    b.rect(140, 478, W - 280, 32, INK)
-    b.text(W // 2, 485, "EUROPE JOINS UKRAINE TALKS", 3, WHITE,
-           align="center")
-    b.rect(140, 514, W - 280, 2, GOLD)
-
-
-# ------------------------------------------------------------------ vignettes
-# Grid: 3 columns (centres 171 / 512 / 853), 2 rows (tops 528 / 768).
-# Each cell: picture zone ~160px tall, one label line underneath.
-CELL_CX = (171, 512, 853)
-CELL_TOP = (528, 768)
-
-
-def vignette_frame(b, cx, top):
-    b.rect(cx - 150, top, 300, 160, PAPER_DK)
-    b.rect(cx - 150, top + 160, 300, 2, GOLD)
-
-
-def vignette_label(b, cx, top, label):
-    b.text(cx, top + 176, label, 2, INK, align="center")
-
-
-def draw_chair_chip(b, cx, top):
-    """Vignette 1 -- Nvidia: an empty witness chair, a chip, a red fall."""
-    vignette_frame(b, cx, top)
-    # Empty chair (navy), seat facing right.
-    b.rect(cx - 78, top + 22, 12, 66, INK)            # backrest
-    b.rect(cx - 78, top + 22, 46, 10, INK)            # backrest top
-    b.rect(cx - 78, top + 84, 118, 12, INK)           # seat
-    b.rect(cx - 70, top + 96, 8, 30, INK)             # legs
-    b.rect(cx + 30, top + 96, 8, 30, INK)
-    # Chip on the seat, gold core, pins on both sides.
-    b.rect(cx + 8, top + 26, 58, 58, CHIP)
-    b.rect(cx + 20, top + 38, 34, 34, GOLD)
-    b.rect(cx + 30, top + 48, 14, 14, CHIP)
-    for py in (top + 34, top + 48, top + 62):
-        b.rect(cx + 0, py, 8, 5, GOLD)
-        b.rect(cx + 66, py, 8, 5, GOLD)
-    # Red down arrow at the right: the share price fell.
-    b.rect(cx + 104, top + 30, 10, 44, RED)
-    b.poly([(cx + 96, top + 72), (cx + 122, top + 72), (cx + 109, top + 96)],
-           RED)
-    vignette_label(b, cx, top, "NVIDIA CEO RESIGNS")
-
-
-def draw_envelope(b, cx, top):
-    """Vignette 2 -- Microsoft outage: dark envelope, warning triangle."""
-    vignette_frame(b, cx, top)
-    b.rect(cx - 72, top + 30, 144, 74, SLATE)
-    b.poly([(cx - 72, top + 30), (cx, top + 74), (cx + 72, top + 30)],
-           SLATE_DK)
-    b.poly([(cx - 72, top + 104), (cx - 30, top + 66), (cx + 30, top + 66),
-            (cx + 72, top + 104)], SLATE_DK)
-    # Warning triangle overlapping the lower right corner.
-    b.poly([(cx + 34, top + 112), (cx + 62, top + 58), (cx + 90, top + 112)],
-           WARN)
-    b.poly([(cx + 42, top + 104), (cx + 62, top + 68), (cx + 82, top + 104)],
-           (176, 108, 20))
-    b.rect(cx + 59, top + 78, 6, 16, WARN)
-    b.disc(cx + 62, top + 100, 3, WARN)
-    vignette_label(b, cx, top, "MICROSOFT OUTAGE")
-
-
-def draw_hospital(b, cx, top):
-    """Vignette 3 -- Khan Younis: hospital block with cross, candle."""
-    vignette_frame(b, cx, top)
-    b.rect(cx - 82, top + 34, 118, 92, HOSP)
-    b.rect(cx - 82, top + 34, 118, 8, (38, 78, 88))
-    # White cross on the facade.
-    b.rect(cx - 40, top + 48, 16, 44, WHITE)
-    b.rect(cx - 52, top + 60, 40, 16, WHITE)
-    # Dark windows.
-    for wx in (cx - 74, cx + 2):
-        for wy in (top + 48, top + 76):
-            b.rect(wx, wy, 18, 14, INK)
-    # Candle at the right, flame above.
-    b.rect(cx + 56, top + 82, 18, 44, (240, 232, 210))
-    b.rect(cx + 63, top + 74, 4, 8, INK)
-    b.poly([(cx + 65, top + 44), (cx + 75, top + 66), (cx + 55, top + 66)],
-           (244, 150, 52))
-    b.poly([(cx + 65, top + 54), (cx + 71, top + 66), (cx + 59, top + 66)],
-           (255, 214, 110))
-    vignette_label(b, cx, top, "HOSPITAL STRIKE KILLS SIX")
-
-
-def draw_warship(b, cx, top):
-    """Vignette 4 -- Gulf of Finland: warship on a grey sea, smoke."""
-    vignette_frame(b, cx, top)
-    # Grey sea with two wave lines.
-    b.rect(cx - 150, top + 96, 300, 36, SEA)
-    b.bezier((cx - 140, top + 108), (cx - 70, top + 100),
-             (cx, top + 108), SEA_DK, thick=2)
-    b.bezier((cx, top + 108), (cx + 70, top + 100),
-             (cx + 140, top + 108), SEA_DK, thick=2)
-    b.bezier((cx - 140, top + 122), (cx - 70, top + 114),
-             (cx, top + 122), SEA_DK, thick=2)
-    b.bezier((cx, top + 122), (cx + 70, top + 114),
-             (cx + 140, top + 122), SEA_DK, thick=2)
-    # Hull and superstructure.
-    b.poly([(cx - 88, top + 66), (cx + 88, top + 66), (cx + 70, top + 98),
-            (cx - 70, top + 98)], SHIP)
-    b.rect(cx - 88, top + 66, 176, 6, SHIP_DK)
-    b.rect(cx - 40, top + 34, 64, 32, SHIP_DK)
-    b.rect(cx - 18, top + 18, 20, 16, SHIP_DK)
-    b.line(cx - 8, top + 18, cx - 8, top + 2, SHIP_DK, 2)
-    # Smoke plume from the funnel, drifting right.
-    for sx, sy, r in [(cx + 8, top + 12, 9), (cx + 26, top + 2, 12),
-                      (cx + 48, top - 6, 10)]:
-        b.disc(sx, sy, r, SMOKE)
-    vignette_label(b, cx, top, "DRONE HITS RUSSIAN WARSHIP")
-
-
-def draw_laptop(b, cx, top):
-    """Vignette 5 -- FBI hack: laptop with a masked face, gold coins."""
-    vignette_frame(b, cx, top)
-    # Laptop screen and base.
-    b.rect(cx - 74, top + 22, 148, 84, LAPTOP)
-    b.rect(cx - 62, top + 32, 124, 64, (16, 20, 36))
-    b.rect(cx - 88, top + 106, 176, 12, SLATE_DK)
-    # Masked face on the screen: pale oval, dark eye slits, hood line.
-    b.ellipse(cx, top + 62, 26, 30, MASK)
-    b.ellipse(cx, top + 34, 26, 12, LAPTOP)
-    b.rect(cx - 16, top + 52, 12, 5, INK)
-    b.rect(cx + 4, top + 52, 12, 5, INK)
-    b.rect(cx - 4, top + 78, 8, 3, INK)
-    # Gold coins spilling at the right.
-    for ox, oy, r in [(cx + 92, top + 96, 17), (cx + 116, top + 108, 14),
-                      (cx + 70, top + 112, 12)]:
-        b.disc(ox, oy, r, GOLD)
-        b.ring(ox, oy, r - 5, 1, GOLD_LT)
-    b.text(cx + 92, top + 88, "$", 2, INK, align="center")
-    vignette_label(b, cx, top, "FBI: N. KOREA $400M HACK")
-
-
-def draw_footballer(b, cx, top):
-    """Vignette 6 -- Kane: England footballer in white, ball at his boot."""
-    vignette_frame(b, cx, top)
-    # Simple footballer: head, white shirt, navy shorts, legs, one boot
-    # swung toward the ball.
-    b.disc(cx - 28, top + 28, 12, (198, 150, 110))        # head
-    b.ellipse(cx - 28, top + 20, 12, 6, (60, 44, 30))     # hair
-    b.rect(cx - 42, top + 44, 30, 40, WHITE)              # shirt
-    b.rect(cx - 42, top + 44, 30, 40, INK)                # (border pass)
-    b.rect(cx - 40, top + 46, 26, 36, WHITE)              # shirt fill
-    b.rect(cx - 40, top + 84, 26, 14, INK_SOFT)           # shorts
-    b.rect(cx - 38, top + 98, 9, 26, (198, 150, 110))     # standing leg
-    b.line(cx - 22, top + 100, cx + 22, top + 118, (198, 150, 110),
-           thick=4)                                       # kicking leg
-    b.line(cx - 48, top + 52, cx - 62, top + 74, WHITE, thick=4)  # arm
-    b.line(cx - 12, top + 52, cx + 6, top + 66, WHITE, thick=4)   # arm
-    # Ball at the boot, with pentagon marks.
-    b.disc(cx + 44, top + 112, 18, WHITE)
-    b.ring(cx + 44, top + 112, 18, 1, INK)
-    b.disc(cx + 44, top + 112, 5, INK)
-    for k in range(5):
-        th = -math.pi / 2 + 2 * math.pi * k / 5
-        b.disc(int(cx + 44 + 13 * math.cos(th)),
-               int(top + 112 + 13 * math.sin(th)), 2, INK)
-    # Motion ticks behind the ball.
-    for mx in (cx + 66, cx + 74):
-        b.line(mx, top + 104, mx + 8, top + 104, GOLD, thick=2)
-        b.line(mx, top + 114, mx + 8, top + 114, GOLD, thick=2)
-    vignette_label(b, cx, top, "KANE BREAKS ENGLAND RECORD")
-
-
-# ------------------------------------------------------------------ PNG out
-def encode_png(b):
-    raw = bytearray()
-    for y in range(b.h):
-        raw.append(0)  # filter: none
-        raw += b.px[y * b.w * 3:(y + 1) * b.w * 3]
-    comp = zlib.compress(bytes(raw), 9)
+# -------------------------------------------------------------------- png
+def write_png(path, px):
+    raw = b"".join(b"\x00" + bytes(px[y * W * 3:(y + 1) * W * 3])
+                   for y in range(H))
 
     def chunk(tag, data):
         out = struct.pack(">I", len(data)) + tag + data
         return out + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
 
-    png = b"\x89PNG\r\n\x1a\n"
-    png += chunk(b"IHDR", struct.pack(">IIBBBBB", b.w, b.h, 8, 2, 0, 0, 0))
-    png += chunk(b"IDAT", comp)
-    png += chunk(b"IEND", b"")
-    return png
-
-
-# ------------------------------------------------------------------ compose
-def compose():
-    b = Board(W, H, PAPER)
-    draw_masthead(b)
-    draw_globe(b)
-    draw_dove(b)
-    draw_flags(b)
-    draw_lead_banner(b)
-    # Grid rules.
-    b.rect(0, CELL_TOP[1] - 6, W, 1, GREY_LINE)
-    b.rect(341, CELL_TOP[0], 1, 432, GREY_LINE)
-    b.rect(682, CELL_TOP[0], 1, 432, GREY_LINE)
-    draw_chair_chip(b, CELL_CX[0], CELL_TOP[0])
-    draw_envelope(b, CELL_CX[1], CELL_TOP[0])
-    draw_hospital(b, CELL_CX[2], CELL_TOP[0])
-    draw_warship(b, CELL_CX[0], CELL_TOP[1])
-    draw_laptop(b, CELL_CX[1], CELL_TOP[1])
-    draw_footballer(b, CELL_CX[2], CELL_TOP[1])
-    b.text(W // 2, 992, "MAKE.FUN - NEWS-IMAGE-01", 1, MUTE,
-           align="center")
-    return b
+    ihdr = struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)
+    data = (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(raw, 9))
+            + chunk(b"IEND", b""))
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
 
 
 def main():
-    board = compose()
-    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "out")
-    os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, OUT_NAME)
-    data = encode_png(board)
-    with open(path, "wb") as f:
-        f.write(data)
-    print(f"wrote {path} ({len(data)} bytes)")
+    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "./out")
+    path = os.path.join(out_dir, "entry.png")
+    cv = Canvas()
+    draw_front_page(cv)
+    write_png(path, cv.px)
+    print("wrote %s (%d bytes)" % (path, os.path.getsize(path)))
 
 
 if __name__ == "__main__":

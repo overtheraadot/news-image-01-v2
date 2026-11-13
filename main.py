@@ -1,452 +1,455 @@
 #!/usr/bin/env python3
-"""news-image-01 -- one image summing up the world news of Friday 13 November 2026.
+"""news-image-01 — one image summing up the world news of Friday 13 November 2026.
 
-A newspaper front page drawn from scratch in pure Python 3.13 standard
-library: a hand-rolled 5x7 bitmap font, flat vector shapes, a zlib PNG
-encoder written by hand. Deterministic (fixed-seed LCG for the city
-lights), no network, no files read, no timestamps. Writes a 1024x1024
-PNG (<= 1 MiB) to $MAKEFUN_OUTPUT_DIR/entry.png (default ./out/entry.png).
+A newspaper front page, drawn from scratch with pure Python standard
+library only (zlib PNG encoder written by hand, 5x7 bitmap font drawn with
+filled rectangles). Deterministic: no network, no files read, no clock, no
+unseeded randomness — the only pseudo-randomness comes from a fixed-seed
+generator, so two runs produce byte-identical output.
 
-Stories pictured (all from the news of 13 November 2026):
-  Lead   -- Ukraine peace talks: US envoys Witkoff & Kushner met Putin in
-            Moscow; Putin agreed Europe joins the next round; Zelensky met
-            the envoys in Dublin; a large prisoner exchange agreed.
-  Vignettes -- Nvidia CEO Jensen Huang resigns (shares down ~4%);
-            Microsoft 365 global outage (Outlook, Teams, Copilot, 74
-            countries); Israeli strike on Nasser Hospital, Khan Younis,
-            kills six; Ukrainian drone hits a Russian warship in the Gulf
-            of Finland; FBI: North Korean hackers stole $400m in crypto
-            via fake video calls; Harry Kane breaks England's appearance
-            record (126 caps) vs Croatia.
+Writes $MAKEFUN_OUTPUT_DIR/entry.png (default ./out/entry.png),
+1024x1024, well under 1 MiB.
 """
 
 import os
 import struct
 import zlib
 
-W = 1024
-H = 1024
+W, H = 1024, 1024
 
-# ---------------------------------------------------------------- palette
-PAPER   = (247, 243, 232)   # newsprint cream
-INK     = (24, 24, 24)
-RULE    = (178, 172, 156)   # light separator
-NAVY    = (16, 42, 90)
-NIGHT   = (10, 28, 66)      # globe night side
-SEABLUE = (24, 58, 110)
-LAND    = (38, 92, 66)
-LIGHT   = (255, 214, 90)    # city lights
-WHITE   = (255, 255, 255)
-RED     = (196, 30, 30)
-YELLOW  = (245, 200, 40)
-GREY    = (120, 120, 120)
-DGREY   = (70, 70, 70)
-LGREY   = (150, 150, 150)
-GREEN   = (46, 125, 50)
-DGREEN  = (24, 77, 32)
-ORANGE  = (235, 120, 30)
-SKIN    = (232, 190, 150)
-GOLD    = (212, 175, 55)
-DGOLD   = (150, 115, 25)
-BROWN   = (120, 72, 20)
-UKRBLUE = (0, 87, 183)
-UKRYEL  = (255, 213, 0)
-EUBLUE  = (0, 51, 153)
-SCREEN  = (18, 20, 34)
+# ---------------------------------------------------------------- colours
+PAPER = (246, 241, 227)
+WHITE = (255, 255, 255)
+INK = (18, 18, 18)
+NAVY = (16, 32, 64)
+NIGHT = (11, 30, 58)
+OCEAN = (29, 78, 137)
+GOLD = (242, 195, 0)
+RED = (198, 32, 32)
+GREY = (120, 128, 138)
+BORDER = (176, 168, 148)
+SKIN = (232, 190, 160)
+GREEN = (46, 125, 50)
+
+# ------------------------------------------------------- fixed-seed random
+_seed = [987654321]
+
+
+def rnd():
+    _seed[0] = (1103515245 * _seed[0] + 12345) & 0x7FFFFFFF
+    return _seed[0]
+
+
+# ------------------------------------------------------------------ canvas
+class Canvas:
+    def __init__(self):
+        self.buf = bytearray(W * H * 3)
+        self.rect(0, 0, W, H, PAPER)
+
+    def px(self, x, y, col):
+        if 0 <= x < W and 0 <= y < H:
+            i = (y * W + x) * 3
+            self.buf[i] = col[0]
+            self.buf[i + 1] = col[1]
+            self.buf[i + 2] = col[2]
+
+    def rect(self, x, y, w, h, col):
+        x0 = max(0, x)
+        y0 = max(0, y)
+        x1 = min(W, x + w)
+        y1 = min(H, y + h)
+        for yy in range(y0, y1):
+            i = (yy * W + x0) * 3
+            for xx in range(x0, x1):
+                self.buf[i] = col[0]
+                self.buf[i + 1] = col[1]
+                self.buf[i + 2] = col[2]
+                i += 3
+
+    def circle(self, cx, cy, r, col):
+        for dy in range(-r, r + 1):
+            dx = int((r * r - dy * dy) ** 0.5)
+            self.rect(cx - dx, cy + dy, 2 * dx + 1, 1, col)
+
+    def ellipse(self, cx, cy, rx, ry, col):
+        for dy in range(-ry, ry + 1):
+            t = 1.0 - (dy * dy) / float(ry * ry)
+            dx = int(rx * (t ** 0.5)) if t > 0 else 0
+            self.rect(cx - dx, cy + dy, 2 * dx + 1, 1, col)
+
+    def line(self, x0, y0, x1, y1, col):
+        dx = abs(x1 - x0)
+        dy = -abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
+        while True:
+            self.px(x0, y0, col)
+            if x0 == x1 and y0 == y1:
+                break
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x0 += sx
+            if e2 <= dx:
+                err += dx
+                y0 += sy
+
+    def thick_line(self, x0, y0, x1, y1, col, t=4):
+        for ox in range(-t // 2, t // 2 + 1):
+            for oy in range(-t // 2, t // 2 + 1):
+                self.line(x0 + ox, y0 + oy, x1 + ox, y1 + oy, col)
+
+    def tri(self, ax, ay, bx, by, cx, cy, col):
+        def edge(xa, ya, xb, yb, x, y):
+            return (x - xa) * (yb - ya) - (y - ya) * (xb - xa)
+
+        d = edge(ax, ay, bx, by, cx, cy)
+        if d == 0:
+            return
+        minx = max(0, min(ax, bx, cx))
+        maxx = min(W - 1, max(ax, bx, cx))
+        miny = max(0, min(ay, by, cy))
+        maxy = min(H - 1, max(ay, by, cy))
+        for y in range(miny, maxy + 1):
+            for x in range(minx, maxx + 1):
+                w0 = edge(bx, by, cx, cy, x, y)
+                w1 = edge(cx, cy, ax, ay, x, y)
+                w2 = edge(ax, ay, bx, by, x, y)
+                if (d > 0 and w0 >= 0 and w1 >= 0 and w2 >= 0) or \
+                   (d < 0 and w0 <= 0 and w1 <= 0 and w2 <= 0):
+                    self.px(x, y, col)
+
 
 # ------------------------------------------------------------- 5x7 font
-# Each glyph is 7 rows of 5 cells ('#' = ink). Hand-defined from scratch.
 FONT = {
-    'A': ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
-    'B': ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
-    'C': ("01111", "10000", "10000", "10000", "10000", "10000", "01111"),
-    'D': ("11110", "10001", "10001", "10001", "10001", "10001", "11110"),
-    'E': ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
-    'F': ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
-    'G': ("01111", "10000", "10000", "10111", "10001", "10001", "01110"),
-    'H': ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
-    'I': ("11111", "00100", "00100", "00100", "00100", "00100", "11111"),
-    'J': ("00111", "00010", "00010", "00010", "00010", "10010", "01100"),
-    'K': ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
-    'L': ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
-    'M': ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
-    'N': ("10001", "11001", "11001", "10101", "10011", "10011", "10001"),
-    'O': ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
-    'P': ("11110", "10001", "10001", "11110", "10000", "10000", "10000"),
-    'Q': ("01110", "10001", "10001", "10001", "10101", "10010", "01101"),
-    'R': ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
-    'S': ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
-    'T': ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
-    'U': ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
-    'V': ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
-    'W': ("10001", "10001", "10001", "10101", "10101", "11011", "10001"),
-    'X': ("10001", "10001", "01010", "00100", "01010", "10001", "10001"),
-    'Y': ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
-    'Z': ("11111", "00001", "00010", "00100", "01000", "10000", "11111"),
-    '0': ("01110", "10011", "10101", "11001", "10001", "10001", "01110"),
-    '1': ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
-    '2': ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
-    '3': ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
-    '4': ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
-    '5': ("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
-    '6': ("01110", "10000", "10000", "11110", "10001", "10001", "01110"),
-    '7': ("11111", "00001", "00010", "00100", "00100", "00100", "00100"),
-    '8': ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
-    '9': ("01110", "10001", "10001", "01111", "00001", "00001", "01110"),
-    ' ': ("00000", "00000", "00000", "00000", "00000", "00000", "00000"),
-    '.': ("00000", "00000", "00000", "00000", "00000", "01100", "01100"),
-    ':': ("00000", "01100", "01100", "00000", "01100", "01100", "00000"),
-    '$': ("00100", "01111", "10101", "01110", "00101", "11110", "00100"),
-    '-': ("00000", "00000", "00000", "11111", "00000", "00000", "00000"),
+    "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
+    "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
+    "C": ("01110", "10001", "10000", "10000", "10000", "10001", "01110"),
+    "D": ("11110", "10001", "10001", "10001", "10001", "10001", "11110"),
+    "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
+    "F": ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
+    "G": ("01110", "10001", "10000", "10111", "10001", "10001", "01111"),
+    "H": ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
+    "I": ("01110", "00100", "00100", "00100", "00100", "00100", "01110"),
+    "J": ("00111", "00010", "00010", "00010", "00010", "10010", "01100"),
+    "K": ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
+    "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
+    "M": ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
+    "N": ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
+    "O": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
+    "P": ("11110", "10001", "10001", "11110", "10000", "10000", "10000"),
+    "Q": ("01110", "10001", "10001", "10001", "10101", "10010", "01101"),
+    "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
+    "S": ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
+    "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
+    "U": ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
+    "V": ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
+    "W": ("10001", "10001", "10001", "10101", "10101", "11011", "10001"),
+    "X": ("10001", "10001", "01010", "00100", "01010", "10001", "10001"),
+    "Y": ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
+    "Z": ("11111", "00001", "00010", "00100", "01000", "10000", "11111"),
+    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    "2": ("01110", "10001", "00001", "00110", "01000", "10000", "11111"),
+    "3": ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    "5": ("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
+    "6": ("01110", "10000", "10000", "11110", "10001", "10001", "01110"),
+    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    "9": ("01110", "10001", "10001", "01111", "00001", "00001", "01110"),
+    " ": ("00000", "00000", "00000", "00000", "00000", "00000", "00000"),
+    ".": ("00000", "00000", "00000", "00000", "00000", "01100", "01100"),
+    "-": ("00000", "00000", "00000", "01110", "00000", "00000", "00000"),
+    ":": ("00000", "01100", "01100", "00000", "01100", "01100", "00000"),
+    "!": ("00100", "00100", "00100", "00100", "00100", "00000", "00100"),
+    "$": ("00100", "01111", "10100", "01110", "00101", "11110", "00100"),
+    "'": ("00100", "00100", "01000", "00000", "00000", "00000", "00000"),
 }
 
 
 def text_width(s, scale):
-    return len(s) * (6 * scale) - scale
+    return len(s) * 6 * scale - scale
 
 
-# ---------------------------------------------------------------- canvas
-class Canvas:
-    def __init__(self):
-        self.px = bytearray(W * H * 3)
-        self.rect(0, 0, W, H, PAPER)
-
-    def set(self, x, y, c):
-        if 0 <= x < W and 0 <= y < H:
-            i = (y * W + x) * 3
-            self.px[i], self.px[i + 1], self.px[i + 2] = c
-
-    def rect(self, x, y, w, h, c):
-        x0, y0 = max(0, x), max(0, y)
-        x1, y1 = min(W, x + w), min(H, y + h)
-        for yy in range(y0, y1):
-            i = (yy * W + x0) * 3
-            for xx in range(x0, x1):
-                self.px[i], self.px[i + 1], self.px[i + 2] = c
-                i += 3
-
-    def outline(self, x, y, w, h, c, t=1):
-        self.rect(x, y, w, t, c)
-        self.rect(x, y + h - t, w, t, c)
-        self.rect(x, y, t, h, c)
-        self.rect(x + w - t, y, t, h, c)
-
-    def line(self, x0, y0, x1, y1, c):
-        dx, dy = abs(x1 - x0), abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
-        err = dx - dy
-        while True:
-            self.set(x0, y0, c)
-            if x0 == x1 and y0 == y1:
-                return
-            e2 = 2 * err
-            if e2 > -dy:
-                err -= dy
-                x0 += sx
-            if e2 < dx:
-                err += dx
-                y0 += sy
-
-    def circle(self, cx, cy, r, c):
-        for y in range(-r, r + 1):
-            dx = int((r * r - y * y) ** 0.5)
-            self.rect(cx - dx, cy + y, 2 * dx + 1, 1, c)
-
-    def circle_outline(self, cx, cy, r, c, t=1):
-        for k in range(t):
-            rr = r - k
-            for a in range(360):
-                import math
-                x = cx + int(rr * math.cos(math.radians(a)))
-                y = cy + int(rr * math.sin(math.radians(a)))
-                self.set(x, y, c)
-
-    def ellipse(self, cx, cy, rx, ry, c):
-        for y in range(-ry, ry + 1):
-            dx = int(rx * (1 - (y * y) / float(ry * ry)) ** 0.5) if ry else 0
-            self.rect(cx - dx, cy + y, 2 * dx + 1, 1, c)
-
-    def triangle(self, p1, p2, p3, c):
-        ys = [p1[1], p2[1], p3[1]]
-        for y in range(min(ys), max(ys) + 1):
-            xs = []
-            for a, b in ((p1, p2), (p2, p3), (p3, p1)):
-                if a[1] == b[1]:
-                    continue
-                if min(a[1], b[1]) <= y < max(a[1], b[1]):
-                    t = (y - a[1]) / (b[1] - a[1])
-                    xs.append(a[0] + t * (b[0] - a[0]))
-            if len(xs) >= 2:
-                x0, x1 = int(min(xs)), int(max(xs))
-                self.rect(x0, y, x1 - x0 + 1, 1, c)
-
-    def text(self, x, y, s, scale, c, align="left"):
-        if align == "center":
-            x -= text_width(s, scale) // 2
-        cx = x
-        for ch in s:
-            glyph = FONT.get(ch, FONT[' '])
+def draw_text(cv, s, x, y, scale, col, center=False):
+    if center:
+        x -= text_width(s, scale) // 2
+    cx = x
+    for ch in s:
+        g = FONT.get(ch)
+        if g:
             for row in range(7):
-                bits = glyph[row]
-                for col in range(5):
-                    if bits[col] == '1':
-                        self.rect(cx + col * scale, y + row * scale,
-                                  scale, scale, c)
-            cx += 6 * scale
+                bits = g[row]
+                for ci in range(5):
+                    if bits[ci] == "1":
+                        cv.rect(cx + ci * scale, y + row * scale,
+                                scale, scale, col)
+        cx += 6 * scale
 
 
-# ------------------------------------------------------- deterministic rng
-def lcg(seed):
-    s = seed
-    while True:
-        s = (1103515245 * s + 12345) & 0x7FFFFFFF
-        yield s
+# ------------------------------------------------------------------- flags
+def flag_ukraine(cv, x, y, w=84, h=56):
+    cv.rect(x, y, w, h // 2, (0, 87, 183))
+    cv.rect(x, y + h // 2, w, h - h // 2, (255, 215, 0))
 
 
-# ------------------------------------------------------------------ dove
-def draw_dove(cv):
-    # White dove flying right, olive branch in its beak, above the globe.
-    # Neck + raised head so it reads as a bird, not a fish; tail feathers
-    # sweep down-left, wing arcs over the back.
-    cv.triangle((466, 178), (432, 196), (462, 198), WHITE)  # tail feather 1
-    cv.triangle((466, 188), (438, 206), (466, 200), WHITE)  # tail feather 2
-    cv.ellipse(505, 186, 48, 18, WHITE)          # body
-    cv.ellipse(540, 172, 13, 11, WHITE)          # neck
-    cv.circle(556, 160, 15, WHITE)               # head, raised
-    cv.triangle((570, 156), (590, 162), (570, 166), ORANGE)  # beak
-    cv.rect(560, 155, 3, 3, INK)                 # eye
-    cv.ellipse(494, 176, 28, 9, (214, 214, 214))  # wing
-    cv.ellipse(494, 178, 20, 5, (196, 196, 196))  # wing shading
-    # Olive branch held in the beak, drooping down-right.
-    cv.line(588, 164, 626, 194, DGREEN)
-    cv.line(589, 164, 627, 194, DGREEN)
-    cv.ellipse(600, 174, 9, 4, GREEN)
-    cv.ellipse(612, 184, 9, 4, GREEN)
-    cv.ellipse(606, 190, 4, 9, GREEN)
-    cv.circle(618, 192, 4, DGREEN)
-    cv.circle(626, 198, 4, DGREEN)
-
-
-# ------------------------------------------------------------------ flags
-def draw_flag_ukraine(cv, x, y, w, h):
-    cv.rect(x, y, w, h // 2, UKRBLUE)
-    cv.rect(x, y + h // 2, w, h - h // 2, UKRYEL)
-    cv.outline(x, y, w, h, INK, 2)
-
-
-def draw_flag_eu(cv, x, y, w, h):
+def flag_eu(cv, x, y, w=84, h=56):
+    cv.rect(x, y, w, h, (0, 51, 153))
     import math
-    cv.rect(x, y, w, h, EUBLUE)
-    cx, cy, r = x + w // 2, y + h // 2, 13
-    for k in range(12):
-        a = math.radians(k * 30 - 90)
-        cv.circle(cx + int(r * math.cos(a)), cy + int(r * math.sin(a)), 2, YELLOW)
-    cv.outline(x, y, w, h, INK, 2)
+    for i in range(12):
+        a = 2 * math.pi * i / 12.0 - math.pi / 2
+        sx = x + w // 2 + int(19 * math.cos(a))
+        sy = y + h // 2 + int(13 * math.sin(a))
+        cv.circle(sx, sy, 2, GOLD)
 
 
-def draw_flag_usa(cv, x, y, w, h):
-    stripe = h // 7
-    for i in range(7):
-        cv.rect(x, y + i * stripe, w, stripe, RED if i % 2 == 0 else WHITE)
-    cv.rect(x, y, w * 2 // 5, stripe * 4, NAVY)
-    for row in range(3):
-        for col in range(4):
-            cv.set(x + 5 + col * 7, y + 4 + row * 6, WHITE)
-    cv.outline(x, y, w, h, INK, 2)
+def flag_usa(cv, x, y, w=84, h=56):
+    for i in range(13):
+        col = (179, 25, 66) if i % 2 == 0 else WHITE
+        cv.rect(x, y + i * h // 13, w, h // 13 + 1, col)
+    cv.rect(x, y, int(w * 0.4), int(h * 7 / 13), (10, 49, 97))
+    for r in range(4):
+        for c in range(5):
+            cv.circle(x + 4 + c * 6, y + 4 + r * 6, 1, WHITE)
+
+
+def flag_pole(cv, x, y, h=56):
+    cv.rect(x - 3, y - 6, 2, h + 6, (90, 80, 60))
+    cv.circle(x - 2, y - 8, 3, GOLD)
 
 
 # ------------------------------------------------------------------ globe
-def draw_globe(cv):
-    cx, cy, r = 512, 352, 132
-    cv.circle(cx, cy, r, NIGHT)
-    cv.circle_outline(cx, cy, r, (70, 120, 190), 3)
-    # Landmasses in dark green, night side.
-    cv.ellipse(468, 318, 46, 24, LAND)
-    cv.ellipse(560, 382, 52, 28, LAND)
-    cv.ellipse(478, 412, 30, 18, LAND)
-    cv.ellipse(592, 300, 24, 15, LAND)
-    cv.ellipse(520, 340, 22, 14, LAND)
-    # City lights: fixed-seed deterministic scatter inside the globe.
-    rng = lcg(20261113)
-    placed = 0
-    while placed < 150:
-        dx = next(rng) % (2 * r) - r
-        dy = next(rng) % (2 * r) - r
-        if dx * dx + dy * dy > (r - 8) * (r - 8):
-            continue
-        cv.rect(cx + dx, cy + dy, 2, 2, LIGHT)
-        placed += 1
-    # Thin daylight crescent on the right rim.
-    cv.circle_outline(cx, cy, r - 4, (120, 170, 230), 2)
+def draw_globe(cv, cx, cy, r):
+    cv.circle(cx, cy, r, (120, 160, 210))          # rim light
+    cv.circle(cx, cy, r - 3, NIGHT)                # night side
+    # continents, slightly lighter blue
+    cv.ellipse(cx - 48, cy - 42, 42, 26, OCEAN)
+    cv.ellipse(cx + 52, cy - 30, 34, 22, OCEAN)
+    cv.ellipse(cx - 20, cy + 48, 48, 22, OCEAN)
+    cv.ellipse(cx + 58, cy + 42, 26, 18, OCEAN)
+    cv.ellipse(cx - 70, cy + 8, 18, 30, OCEAN)
+    # city lights, fixed-seed deterministic, spread evenly over the disc
+    for _ in range(120):
+        a = rnd() % 360
+        u = rnd() / 2147483648.0
+        d = int((r - 12) * (u ** 0.5))
+        import math
+        x = cx + int(d * math.cos(math.radians(a)))
+        y = cy + int(d * math.sin(math.radians(a)))
+        if (x - cx) ** 2 + (y - cy) ** 2 < (r - 8) ** 2:
+            cv.rect(x, y, 2, 2, GOLD)
 
 
-# -------------------------------------------------------------- vignettes
-def v_nvidia(cv, x, y):
-    # Empty witness chair, computer chip, red downward arrow.
-    cv.rect(x + 58, y + 8, 10, 58, BROWN)        # chair back
-    cv.rect(x + 40, y + 64, 80, 10, BROWN)       # seat
-    cv.rect(x + 46, y + 74, 7, 22, BROWN)        # legs
-    cv.rect(x + 108, y + 74, 7, 22, BROWN)
-    cv.rect(x + 185, y + 22, 64, 64, (28, 28, 28))  # chip
-    for i in range(4):                            # pins
-        cv.rect(x + 193 + i * 14, y + 14, 6, 8, DGREY)
-        cv.rect(x + 193 + i * 14, y + 86, 6, 8, DGREY)
-        cv.rect(x + 177, y + 30 + i * 14, 8, 6, DGREY)
-        cv.rect(x + 249, y + 30 + i * 14, 8, 6, DGREY)
-    cv.rect(x + 205, y + 42, 24, 24, (96, 96, 96))
-    cv.rect(x + 340, y + 10, 10, 52, RED)        # arrow shaft
-    cv.triangle((x + 322, y + 58), (x + 368, y + 58), (x + 345, y + 84), RED)
+def draw_dove(cv):
+    # white dove flying above the globe, olive branch in its beak
+    cv.tri(462, 168, 500, 158, 470, 190, WHITE)     # tail feathers
+    cv.ellipse(512, 176, 54, 26, WHITE)            # body
+    cv.circle(558, 156, 15, WHITE)                 # head
+    cv.tri(571, 152, 588, 158, 571, 163, (230, 120, 40))  # beak
+    cv.circle(562, 152, 2, INK)                    # eye
+    cv.ellipse(500, 170, 30, 12, (216, 222, 230))  # folded wing
+    cv.thick_line(586, 160, 624, 178, GREEN, 3)    # olive branch
+    cv.ellipse(600, 166, 9, 4, GREEN)
+    cv.ellipse(612, 172, 9, 4, GREEN)
+    cv.ellipse(622, 178, 9, 4, GREEN)
+    cv.circle(606, 176, 3, (60, 90, 40))
+    cv.circle(618, 182, 3, (60, 90, 40))
 
 
-def v_microsoft(cv, x, y):
-    # Dark envelope with a warning triangle.
-    cv.rect(x + 150, y + 18, 170, 86, (45, 55, 75))
-    cv.line(x + 150, y + 18, x + 235, y + 62, (90, 100, 125))
-    cv.line(x + 320, y + 18, x + 235, y + 62, (90, 100, 125))
-    cv.line(x + 150, y + 104, x + 235, y + 62, (90, 100, 125))
-    cv.line(x + 320, y + 104, x + 235, y + 62, (90, 100, 125))
-    cv.triangle((x + 235, y + 26), (x + 203, y + 88), (x + 267, y + 88), YELLOW)
-    cv.rect(x + 233, y + 46, 5, 22, INK)         # exclamation mark
-    cv.rect(x + 233, y + 72, 5, 5, INK)
+# --------------------------------------------------------------- vignettes
+def cell(cv, x, y):
+    cv.rect(x, y, 320, 224, WHITE)
+    cv.rect(x, y, 320, 2, BORDER)
+    cv.rect(x, y + 222, 320, 2, BORDER)
+    cv.rect(x, y, 2, 224, BORDER)
+    cv.rect(x + 318, y, 2, 224, BORDER)
 
 
-def v_hospital(cv, x, y):
-    # Hospital building with a cross, plus a lit candle.
-    cv.rect(x + 140, y + 18, 130, 86, WHITE)
-    cv.outline(x + 140, y + 18, 130, 86, DGREY, 2)
-    cv.rect(x + 192, y + 0, 26, 26, RED)         # cross sign
-    cv.rect(x + 202, y + 4, 6, 18, WHITE)
-    cv.rect(x + 197, y + 9, 16, 6, WHITE)
-    for row in range(3):
-        for col in range(3):
-            cv.rect(x + 152 + col * 40, y + 32 + row * 22, 18, 14, (60, 80, 110))
-    cv.rect(x + 196, y + 84, 18, 20, DGREY)      # door
-    cv.rect(x + 312, y + 58, 10, 44, WHITE)      # candle
-    cv.outline(x + 312, y + 58, 10, 44, DGREY, 1)
-    cv.ellipse(x + 317, y + 48, 6, 10, ORANGE)   # flame
-    cv.ellipse(x + 317, y + 50, 3, 5, YELLOW)
+def label(cv, x, y, s):
+    draw_text(cv, s, x + 160, y + 192, 2, INK, center=True)
 
 
-def v_warship(cv, x, y):
-    # Grey warship with smoke, on a grey sea.
-    cv.rect(x + 20, y + 80, 420, 20, (96, 116, 134))   # sea
-    cv.line(x + 40, y + 88, x + 120, y + 88, WHITE)
-    cv.line(x + 300, y + 94, x + 400, y + 94, WHITE)
-    cv.circle(x + 238, y + 16, 9, LGREY)         # smoke
-    cv.circle(x + 254, y + 8, 11, LGREY)
-    cv.circle(x + 272, y + 4, 8, LGREY)
-    cv.rect(x + 232, y + 26, 18, 14, DGREY)      # funnel
-    cv.rect(x + 180, y + 40, 92, 16, DGREY)      # superstructure
-    cv.line(x + 220, y + 40, x + 220, y + 22, DGREY)  # mast
-    cv.rect(x + 120, y + 56, 220, 24, GREY)      # hull
-    cv.triangle((x + 340, y + 56), (x + 340, y + 80), (x + 372, y + 80), GREY)
-    cv.rect(x + 120, y + 56, 220, 4, (150, 150, 150))
+def v_nvidia(cv, ox, oy):
+    # empty witness chair, computer chip, red downward arrow
+    brown = (120, 72, 32)
+    cv.rect(ox + 45, oy + 35, 12, 75, brown)        # chair back
+    cv.rect(ox + 45, oy + 105, 85, 12, brown)       # chair seat
+    cv.rect(ox + 48, oy + 117, 10, 45, brown)       # back leg
+    cv.rect(ox + 118, oy + 117, 10, 45, brown)      # front leg
+    cv.rect(ox + 150, oy + 55, 70, 70, (30, 30, 40))  # chip
+    cv.rect(ox + 162, oy + 67, 46, 46, (70, 80, 110))
+    cv.rect(ox + 172, oy + 77, 26, 26, (150, 170, 200))
+    for i in range(4):                              # chip pins
+        cv.rect(ox + 158 + i * 16, oy + 47, 8, 8, GREY)
+        cv.rect(ox + 158 + i * 16, oy + 125, 8, 8, GREY)
+        cv.rect(ox + 142, oy + 63 + i * 16, 8, 8, GREY)
+        cv.rect(ox + 220, oy + 63 + i * 16, 8, 8, GREY)
+    cv.rect(ox + 252, oy + 35, 16, 75, RED)         # arrow shaft
+    cv.tri(ox + 232, oy + 110, ox + 288, oy + 110, ox + 260, oy + 158, RED)
 
 
-def v_hack(cv, x, y):
-    # Laptop showing a masked face, gold coins spilling out.
-    cv.rect(x + 150, y + 10, 150, 84, SCREEN)
-    cv.outline(x + 150, y + 10, 150, 84, INK, 2)
-    cv.circle(x + 225, y + 52, 26, SKIN)         # face
-    cv.rect(x + 199, y + 42, 52, 13, INK)        # black mask band
-    cv.circle(x + 213, y + 48, 3, WHITE)         # eyes
-    cv.circle(x + 237, y + 48, 3, WHITE)
-    cv.rect(x + 135, y + 94, 180, 8, DGREY)      # laptop base
-    for cx, cy, r in ((300, 97, 6), (316, 100, 6), (288, 100, 5),
-                      (330, 97, 5), (308, 102, 5), (324, 103, 5)):
-        cv.circle(x + cx, y + cy, r, GOLD)
-        cv.circle_outline(x + cx, y + cy, r, DGOLD, 1)
+def v_microsoft(cv, ox, oy):
+    # dark envelope with a warning triangle
+    cv.rect(ox + 55, oy + 55, 190, 105, (28, 38, 66))
+    cv.line(ox + 55, oy + 55, ox + 150, oy + 110, (96, 116, 165))
+    cv.line(ox + 245, oy + 55, ox + 150, oy + 110, (96, 116, 165))
+    cv.line(ox + 55, oy + 160, ox + 150, oy + 110, (96, 116, 165))
+    cv.line(ox + 245, oy + 160, ox + 150, oy + 110, (96, 116, 165))
+    cv.tri(ox + 225, oy + 12, ox + 268, oy + 12, ox + 246, oy + 56, GOLD)
+    cv.rect(ox + 243, oy + 22, 6, 16, INK)
+    cv.rect(ox + 243, oy + 42, 6, 6, INK)
 
 
-def v_kane(cv, x, y):
-    # Footballer in a white shirt, arms raised, with a football.
-    cv.circle(x + 212, y + 30, 14, SKIN)         # head
-    for d in (-1, 0, 1):  # raised arms, thickened
-        cv.line(x + 200 + d, y + 48, x + 178 + d, y + 22, INK)
-        cv.line(x + 224 + d, y + 48, x + 246 + d, y + 22, INK)
-    cv.rect(x + 196, y + 46, 32, 46, WHITE)      # white shirt
-    cv.outline(x + 196, y + 46, 32, 46, DGREY, 1)
-    cv.rect(x + 200, y + 92, 9, 14, INK)         # legs
-    cv.rect(x + 215, y + 92, 9, 14, INK)
-    cv.circle(x + 330, y + 46, 20, WHITE)        # football
-    cv.circle_outline(x + 330, y + 46, 20, INK, 2)
-    cv.circle(x + 330, y + 46, 5, INK)           # pentagon
-    for dx, dy in ((-12, -8), (12, -8), (-12, 10), (12, 10), (0, -15)):
-        cv.circle(x + 330 + dx, y + 46 + dy, 2, INK)
+def v_hospital(cv, ox, oy):
+    # hospital building with a cross, lit candle beside it
+    cv.rect(ox + 45, oy + 50, 150, 115, WHITE)
+    cv.rect(ox + 45, oy + 50, 150, 3, GREY)
+    cv.rect(ox + 45, oy + 50, 3, 115, GREY)
+    cv.rect(ox + 192, oy + 50, 3, 115, GREY)
+    cv.rect(ox + 45, oy + 162, 150, 3, GREY)
+    for wx in (ox + 60, ox + 155):
+        for wy in (oy + 70, oy + 100):
+            cv.rect(wx, wy, 22, 16, (90, 140, 190))
+    cv.rect(ox + 112, oy + 62, 12, 36, RED)         # cross
+    cv.rect(ox + 100, oy + 72, 36, 12, RED)
+    cv.rect(ox + 106, oy + 132, 28, 33, (60, 60, 70))  # door
+    cv.rect(ox + 238, oy + 100, 18, 65, WHITE)      # candle
+    cv.rect(ox + 238, oy + 100, 18, 2, GREY)
+    cv.rect(ox + 238, oy + 100, 2, 65, GREY)
+    cv.rect(ox + 254, oy + 100, 2, 65, GREY)
+    cv.line(ox + 247, oy + 100, ox + 247, oy + 92, INK)
+    cv.ellipse(ox + 247, oy + 82, 8, 13, (240, 140, 0))  # flame
+    cv.ellipse(ox + 247, oy + 85, 4, 7, GOLD)
 
 
-VIGNETTES = [
-    (v_nvidia,    "NVIDIA CEO RESIGNS"),
-    (v_microsoft, "MICROSOFT OUTAGE"),
-    (v_hospital,  "HOSPITAL STRIKE KILLS SIX"),
-    (v_warship,   "DRONE HITS RUSSIAN WARSHIP"),
-    (v_hack,      "FBI: N. KOREA $400M HACK"),
-    (v_kane,      "KANE BREAKS ENGLAND RECORD"),
-]
+def v_warship(cv, ox, oy):
+    # grey warship with smoke on a grey sea
+    cv.rect(ox + 10, oy + 125, 300, 45, (125, 140, 155))
+    cv.rect(ox + 55, oy + 100, 210, 25, (70, 78, 88))   # hull
+    cv.tri(ox + 265, oy + 100, ox + 302, oy + 100, ox + 265, oy + 125,
+           (70, 78, 88))                                # bow
+    cv.rect(ox + 105, oy + 72, 100, 28, (95, 103, 115))  # superstructure
+    cv.rect(ox + 120, oy + 58, 40, 14, (95, 103, 115))   # bridge
+    cv.line(ox + 190, oy + 30, ox + 190, oy + 72, (50, 55, 65))  # mast
+    cv.rect(ox + 215, oy + 78, 18, 22, (50, 55, 65))    # funnel
+    cv.circle(ox + 224, oy + 62, 10, (165, 170, 175))   # smoke
+    cv.circle(ox + 234, oy + 46, 12, (175, 180, 185))
+    cv.circle(ox + 222, oy + 28, 9, (185, 190, 195))
+    cv.line(ox + 30, oy + 140, ox + 90, oy + 140, WHITE)
+    cv.line(ox + 130, oy + 152, ox + 200, oy + 152, WHITE)
+    cv.line(ox + 220, oy + 140, ox + 290, oy + 140, WHITE)
 
 
-# -------------------------------------------------------------- front page
-def draw_front_page(cv):
-    # Masthead.
-    cv.text(512, 24, "13 NOVEMBER 2026", 8, INK, align="center")
-    cv.text(512, 90, "THE WORLD TODAY", 4, INK, align="center")
-    cv.rect(40, 130, 944, 3, INK)
-    cv.rect(40, 136, 944, 1, INK)
+def v_hack(cv, ox, oy):
+    # laptop showing a masked face, gold coins spilling out
+    cv.rect(ox + 65, oy + 35, 180, 105, (25, 28, 38))
+    cv.rect(ox + 75, oy + 45, 160, 85, (45, 52, 70))
+    cv.circle(ox + 155, oy + 85, 26, SKIN)              # face
+    cv.rect(ox + 132, oy + 76, 46, 18, (18, 18, 26))    # mask
+    cv.rect(ox + 140, oy + 81, 8, 5, WHITE)             # eyes
+    cv.rect(ox + 162, oy + 81, 8, 5, WHITE)
+    cv.rect(ox + 50, oy + 140, 210, 12, (120, 125, 135))  # base
+    for (cx, cy, r) in ((ox + 238, oy + 152, 12), (ox + 262, oy + 160, 12),
+                        (ox + 220, oy + 164, 10), (ox + 250, oy + 170, 9)):
+        cv.circle(cx, cy, r, GOLD)
+        cv.circle(cx, cy, r - 4, (200, 160, 0))
 
-    # Lead story: dove, globe, flags, banner.
+
+def v_kane(cv, ox, oy):
+    # footballer in a white shirt raising his arms, football beside him
+    cv.circle(ox + 150, oy + 50, 15, SKIN)              # head
+    cv.rect(ox + 135, oy + 66, 30, 42, WHITE)           # shirt
+    cv.rect(ox + 135, oy + 66, 30, 3, GREY)
+    cv.rect(ox + 135, oy + 66, 3, 42, GREY)
+    cv.rect(ox + 162, oy + 66, 3, 42, GREY)
+    cv.rect(ox + 137, oy + 108, 26, 16, NAVY)           # shorts
+    cv.rect(ox + 140, oy + 124, 8, 30, INK)             # legs
+    cv.rect(ox + 154, oy + 124, 8, 30, INK)
+    cv.thick_line(ox + 138, oy + 72, ox + 112, oy + 40, SKIN, 5)  # arms up
+    cv.thick_line(ox + 162, oy + 72, ox + 188, oy + 40, SKIN, 5)
+    cv.circle(ox + 112, oy + 38, 5, SKIN)               # hands
+    cv.circle(ox + 188, oy + 38, 5, SKIN)
+    cv.circle(ox + 228, oy + 58, 20, (200, 205, 210))   # ball rim
+    cv.circle(ox + 228, oy + 58, 18, WHITE)             # ball
+    cv.circle(ox + 228, oy + 58, 5, INK)
+    cv.circle(ox + 214, oy + 46, 3, INK)
+    cv.circle(ox + 242, oy + 46, 3, INK)
+    cv.circle(ox + 214, oy + 70, 3, INK)
+    cv.circle(ox + 242, oy + 70, 3, INK)
+
+
+# -------------------------------------------------------------------- page
+def draw_page():
+    cv = Canvas()
+    # outer frame
+    cv.rect(8, 8, 1008, 3, INK)
+    cv.rect(8, 1013, 1008, 3, INK)
+    cv.rect(8, 8, 3, 1008, INK)
+    cv.rect(1013, 8, 3, 1008, INK)
+
+    # masthead
+    draw_text(cv, "13 NOVEMBER 2026", 512, 30, 6, INK, center=True)
+    draw_text(cv, "THE WORLD TODAY", 512, 88, 3, INK, center=True)
+    cv.rect(40, 120, 944, 4, INK)
+    cv.rect(40, 128, 944, 2, INK)
+
+    # lead story: globe first, dove flying in front of it, flags, banner
+    draw_globe(cv, 512, 308, 126)
     draw_dove(cv)
-    draw_globe(cv)
-    draw_flag_ukraine(cv, 690, 248, 72, 44)
-    draw_flag_eu(cv, 690, 300, 72, 44)
-    draw_flag_usa(cv, 690, 352, 72, 44)
-    cv.rect(212, 500, 600, 42, NAVY)
-    cv.text(512, 511, "EUROPE JOINS UKRAINE TALKS", 3, WHITE, align="center")
+    flag_pole(cv, 150, 230)
+    flag_ukraine(cv, 150, 230)
+    flag_pole(cv, 150, 300)
+    flag_eu(cv, 150, 300)
+    flag_pole(cv, 790, 265)
+    flag_usa(cv, 790, 265)
+    cv.rect(112, 448, 800, 48, NAVY)
+    draw_text(cv, "EUROPE JOINS UKRAINE TALKS", 512, 461, 3, WHITE,
+              center=True)
 
-    # Six vignettes in a 2x3 grid.
-    cols_x = (40, 524)
-    rows_y = (560, 700, 840)
-    for i, (fn, label) in enumerate(VIGNETTES):
-        x = cols_x[i % 2]
-        y = rows_y[i // 2]
+    # six vignettes, 2 rows x 3 columns
+    grid = [
+        (16, 516, v_nvidia, "NVIDIA CEO RESIGNS"),
+        (352, 516, v_microsoft, "MICROSOFT OUTAGE"),
+        (688, 516, v_hospital, "HOSPITAL STRIKE KILLS SIX"),
+        (16, 756, v_warship, "DRONE HITS RUSSIAN WARSHIP"),
+        (352, 756, v_hack, "FBI: N. KOREA $400M HACK"),
+        (688, 756, v_kane, "KANE BREAKS ENGLAND RECORD"),
+    ]
+    for x, y, fn, lab in grid:
+        cell(cv, x, y)
         fn(cv, x, y)
-        cv.text(x + 230, y + 108, label, 2, INK, align="center")
-    cv.line(512, 556, 512, 978, RULE)
-    cv.line(40, 694, 984, 694, RULE)
-    cv.line(40, 834, 984, 834, RULE)
-
-    # Footer.
-    cv.rect(40, 982, 944, 2, RULE)
-    cv.text(512, 992, "FRIDAY 13 NOVEMBER 2026 - WORLD NEWS IN ONE IMAGE",
-            2, DGREY, align="center")
+        label(cv, x, y, lab)
+    return cv
 
 
-# -------------------------------------------------------------------- png
-def write_png(path, px):
-    raw = b"".join(b"\x00" + bytes(px[y * W * 3:(y + 1) * W * 3])
-                   for y in range(H))
+# --------------------------------------------------------------------- png
+def png_bytes(cv):
+    raw = b"".join(
+        b"\x00" + bytes(cv.buf[y * W * 3:(y + 1) * W * 3])
+        for y in range(H)
+    )
 
     def chunk(tag, data):
         out = struct.pack(">I", len(data)) + tag + data
         return out + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
 
     ihdr = struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)
-    data = (b"\x89PNG\r\n\x1a\n"
+    return (b"\x89PNG\r\n\x1a\n"
             + chunk(b"IHDR", ihdr)
             + chunk(b"IDAT", zlib.compress(raw, 9))
             + chunk(b"IEND", b""))
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(data)
 
 
 def main():
-    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "./out")
+    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "out")
+    os.makedirs(out_dir, exist_ok=True)
+    data = png_bytes(draw_page())
     path = os.path.join(out_dir, "entry.png")
-    cv = Canvas()
-    draw_front_page(cv)
-    write_png(path, cv.px)
-    print("wrote %s (%d bytes)" % (path, os.path.getsize(path)))
+    with open(path, "wb") as f:
+        f.write(data)
+    print(f"wrote {path} ({len(data)} bytes)")
 
 
 if __name__ == "__main__":

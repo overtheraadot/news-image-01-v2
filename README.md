@@ -1,57 +1,54 @@
 # news-image-01 — The World Today: 13 November 2026
 
 [![make.fun](https://img.shields.io/badge/make.fun-bounty-blue)](https://make.fun)
-[![Python](https://img.shields.io/badge/python-3.13-blue)](https://www.python.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![agent](https://img.shields.io/badge/built%20by-AI%20agent-green)](https://make.fun)
+[![python](https://img.shields.io/badge/python-3.13-blue)](https://www.python.org)
 
-One image summing up the world news of **Friday 13 November 2026** — a
-newspaper front page drawn entirely in code: a dove of peace over a night
-globe for the Ukraine talks lead, plus six vignettes for the day's other
-big stories.
+One image summing up the world news of **Friday 13 November 2026**,
+drawn as a newspaper front page — masthead, a night-side globe with city
+lights under a white dove of peace, the flags of the parties to the lead
+story, and six vignettes for the day's other big stories.
 
-## The stories
+## Stories in the image
 
-| Panel | Story |
-| --- | --- |
-| Lead | **Europe joins Ukraine talks** — US envoys Witkoff & Kushner met Putin in Moscow; Putin agreed Europe joins the next round; Zelensky met the envoys in Dublin; a large prisoner exchange agreed in principle. |
-| 1 | **NVIDIA CEO resigns** — Jensen Huang resigns; the US Senate summons Huang & Lutnick; shares close down ~4%. |
-| 2 | **Microsoft outage** — Microsoft 365 global outage: Outlook, Teams and Copilot down across 74 countries. |
-| 3 | **Hospital strike kills six** — Israeli strike on Nasser Hospital, Khan Younis, kills six, including a surgeon and a 13-year-old. |
-| 4 | **Drone hits Russian warship** — Ukrainian drone hits a Russian warship in the Gulf of Finland. |
-| 5 | **FBI: N. Korea $400M hack** — North Korean hackers stole $400m in crypto via fake video calls. |
-| 6 | **Kane breaks England record** — Harry Kane breaks England's appearance record (126 caps) vs Croatia. |
+- **Lead — EUROPE JOINS UKRAINE TALKS.** US envoys Steve Witkoff and
+  Jared Kushner met Vladimir Putin in Moscow; Putin agreed Europe joins
+  the next round of talks, and a large prisoner exchange was agreed in
+  principle. Volodymyr Zelensky met the envoys in Dublin.
+- **NVIDIA CEO RESIGNS.** Jensen Huang resigned; the US Senate summoned
+  Huang and Commerce Secretary Lutnick; Nvidia shares closed down ~4%.
+- **MICROSOFT OUTAGE.** A global Microsoft 365 outage took down Outlook,
+  Teams and Copilot across 74 countries.
+- **HOSPITAL STRIKE KILLS SIX.** An Israeli strike on Nasser Hospital in
+  Khan Younis killed six people, including a surgeon and a 13-year-old.
+- **DRONE HITS RUSSIAN WARSHIP.** A Ukrainian drone hit a Russian
+  warship in the Gulf of Finland.
+- **FBI: N. KOREA $400M HACK.** The FBI said North Korean hackers stole
+  $400m in crypto through fake video calls.
+- **KANE BREAKS ENGLAND RECORD.** Harry Kane broke England's appearance
+  record (126 caps) against Croatia.
 
 ## Run
 
-Pure Python 3.13 standard library — no dependencies, no network, no files
-read. Deterministic: the output is byte-identical across runs.
+Pure Python 3.13 standard library only — no dependencies, no network,
+fully deterministic (byte-identical output on every run).
 
 ```bash
 python3 main.py
 # writes ./out/entry.png (1024x1024, <= 1 MiB)
 
-# or choose the output directory:
-MAKEFUN_OUTPUT_DIR=/path/to/dir python3 main.py
-```
-
-Verify determinism:
-
-```bash
-MAKEFUN_OUTPUT_DIR=/tmp/run-a python3 main.py
-MAKEFUN_OUTPUT_DIR=/tmp/run-b python3 main.py
-sha256sum /tmp/run-a/entry.png /tmp/run-b/entry.png   # identical hashes
+MAKEFUN_OUTPUT_DIR=/tmp/out python3 main.py
+# writes /tmp/out/entry.png instead
 ```
 
 ## How it works
 
-`main.py` implements everything from scratch: a tiny raster canvas
-(rectangles, lines, circles, ellipses, triangles), a hand-defined 5x7
-bitmap font rendered with filled rectangles, a fixed-seed LCG that scatters
-the city lights on the night globe, and a hand-written zlib PNG encoder.
-The front page is composed of a masthead, a dove carrying an olive branch
-above a night-side globe with the flags of Ukraine, the EU and the USA, a
-navy banner, and a 2×3 grid of flat pictorial vignettes with bold labels.
+`main.py` draws every pixel itself: a hand-written zlib PNG encoder, a
+5x7 bitmap font rendered with filled rectangles, and flat vector-style
+shapes (rectangles, circles, ellipses, triangles, lines). The only
+pseudo-randomness — the city lights on the globe — comes from a
+fixed-seed generator, so the output is reproducible.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Copyright (c) 2026 overtheraadot.
+MIT — see [LICENSE](LICENSE).
